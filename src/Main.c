@@ -1,4 +1,5 @@
 #include "/home/codeleaded/System/Static/Library/WindowEngine1.0.h"
+#include "/home/codeleaded/System/Static/Library/Random.h"
 #include "/home/codeleaded/System/Static/Library/Lib3D_Cube.h"
 #include "/home/codeleaded/System/Static/Library/Lib3D_Mathlib.h"
 #include "/home/codeleaded/System/Static/Library/Lib3D_Mesh.h"
@@ -56,29 +57,69 @@ RubiksCube_Side RubiksCube_Side_AxisIndexToSide[3][4] = {
 	{ RUBIKSCUBE_SIDE_LEFT,RUBIKSCUBE_SIDE_TOP,RUBIKSCUBE_SIDE_RIGHT,RUBIKSCUBE_SIDE_BOTTOM }
 };
 
+typedef struct RubiksCube_State {
+    RubiksCube_Field sides[RUBIKSCUBE_SIDE_COUNT][RUBIKSCUBE_SIDE_FIELDCOUNT2];
+} RubiksCube_State;
+
+typedef struct RubiksCube_Move {
+    unsigned char axis;
+	unsigned char axis_line;
+	unsigned char dir;
+} RubiksCube_Move;
+
 typedef struct RubiksCube{
 	RubiksCube_Field sides[RUBIKSCUBE_SIDE_COUNT][RUBIKSCUBE_SIDE_FIELDCOUNT2];
 	Pixel colors[RUBIKSCUBE_SIDE_COUNT];
 	Vec3D pos;
 	float ax;
 	float ay;
+	Vector trace;
 } RubiksCube;
 
-void RubiksCube_Reset(RubiksCube* c){
+void RubiksCube_Reset(RubiksCube_State* c){
 	for(int i = 0;i<RUBIKSCUBE_SIDE_COUNT;i++){
 		for(int j = 0;j<RUBIKSCUBE_SIDE_FIELDCOUNT2;j++){
 			c->sides[i][j] = i + 1U;
 		}
 	}
 }
+char RubiksCube_IsSolved(const RubiksCube_State* c) {
+    for(int s = 0; s < RUBIKSCUBE_SIDE_COUNT; s++) {
+        for(int i = 0; i < RUBIKSCUBE_SIDE_FIELDCOUNT2; i++) {
+            if(c->sides[s][i] != (unsigned char)(s + 1U)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+void RubiksCube_CopyState(RubiksCube_State* dst, const RubiksCube_State* src) {
+    memcpy(dst->sides, src->sides, sizeof(src->sides));
+}
+char RubiksCube_EqualState(const RubiksCube_State* a, const RubiksCube* b) {
+    return memcmp(a->sides, b->sides, sizeof(a->sides)) == 0;
+}
+
 RubiksCube RubiksCube_New(Vec3D p,Pixel colors[RUBIKSCUBE_SIDE_COUNT]){
 	RubiksCube c;
 	c.pos = p;
 	c.ax = 0.0f;
 	c.ay = 0.0f;
+	c.trace = Vector_New(sizeof(RubiksCube_Move));
 	memcpy(c.colors,colors,sizeof(c.colors));
-	RubiksCube_Reset(&c);
+	RubiksCube_Reset((RubiksCube_State*)&c);
 	return c;
+}
+void RubiksCube_Free(RubiksCube* c){
+	Vector_Free(&c->trace);
+}
+int RubiksCube_MapIndex(int ixy,unsigned char toby){
+	if(!toby){
+		const int out = ixy - RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
+		return out + (out >= 0 && RUBIKSCUBE_SIDE_FIELDCOUNT % 2 == 0 ? 1 : 0);
+	}else{
+		return ixy + (ixy >= 0 && RUBIKSCUBE_SIDE_FIELDCOUNT % 2 == 0 ? -1 : 0) + RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
+	}
 }
 int RubiksCube_Mirror(unsigned char xy,int i){
 	const int ix = i % RUBIKSCUBE_SIDE_FIELDCOUNT;
@@ -96,28 +137,28 @@ int RubiksCube_MirrorSide_Index(int i){
 	const int ix = i % RUBIKSCUBE_SIDE_FIELDCOUNT;
 	const int iy = i / RUBIKSCUBE_SIDE_FIELDCOUNT;
 
-	const int cx = ix - RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
-	const int cy = iy - RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
+	const int cx = RubiksCube_MapIndex(ix,0U);
+	const int cy = RubiksCube_MapIndex(iy,0U);
 
 	const int tx = -cx;
 	const int ty = -cy;
 
-	const int rtx = tx + RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
-	const int rty = ty + RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
+	const int rtx = RubiksCube_MapIndex(tx,1U);
+	const int rty = RubiksCube_MapIndex(ty,1U);
 	return rty * RUBIKSCUBE_SIDE_FIELDCOUNT + rtx;
 }
 int RubiksCube_RotateSide_Index(int i,unsigned char dir){
 	const int ix = i % RUBIKSCUBE_SIDE_FIELDCOUNT;
 	const int iy = i / RUBIKSCUBE_SIDE_FIELDCOUNT;
 
-	const int cx = ix - RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
-	const int cy = iy - RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
+	const int cx = RubiksCube_MapIndex(ix,0U);
+	const int cy = RubiksCube_MapIndex(iy,0U);
 
 	const int tx = cy * RubiksCube_Side_Dir[dir];
 	const int ty = cx * RubiksCube_Side_Dir[(dir + 1U) % 2U];
 
-	const int rtx = tx + RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
-	const int rty = ty + RUBIKSCUBE_SIDE_FIELDCOUNT / 2;
+	const int rtx = RubiksCube_MapIndex(tx,1U);
+	const int rty = RubiksCube_MapIndex(ty,1U);
 	return rty * RUBIKSCUBE_SIDE_FIELDCOUNT + rtx;
 }
 void RubiksCube_RotateSide(RubiksCube* c,RubiksCube_Side side,unsigned char dir){
@@ -184,6 +225,90 @@ void RubiksCube_Rotate(RubiksCube* c,unsigned char axis,unsigned char axis_line,
 		RubiksCube_RotateSide(c,RubiksCube_Side_AxisToSide[axis][1],(dir + 1U) % 2U);
 	
 	RubiksCube_RotateLine(c,axis,axis_line,dir);
+}
+void RubiksCube_Shuffle(RubiksCube* c,unsigned int count){
+	for(unsigned int i = 0;i<count;i++){
+		const unsigned char axis = Random_u64_MinMax(0U,3U);
+		const unsigned char axis_line = Random_u64_MinMax(0U,RUBIKSCUBE_SIDE_FIELDCOUNT);
+		const unsigned char dir = Random_u64_MinMax(0U,2U);
+
+		Vector_Push(&c->trace,(RubiksCube_Move[]){{
+			.axis = axis,
+			.axis_line = axis_line,
+			.dir = dir
+		}});
+
+		RubiksCube_Rotate(
+			c,
+			axis,
+			axis_line,
+			dir
+		);
+	}
+}
+void RubiksCube_Unshuffle(RubiksCube* c,unsigned int count){
+	for(unsigned int i = 0;i<count && c->trace.size > 0;i++){
+		const RubiksCube_Move* const rm = (RubiksCube_Move*)Vector_Get(&c->trace,c->trace.size - 1);
+
+		RubiksCube_Rotate(
+			c,
+			rm->axis,
+			rm->axis_line,
+			!rm->dir
+		);
+		
+		Vector_PopTop(&c->trace);
+	}
+}
+
+char RubiksCube_Solve_R(RubiksCube* c, RubiksCube_State* target, int depth, int max_depth) {
+    if (depth > max_depth)
+		return 0;
+    if (RubiksCube_IsSolved((RubiksCube_State*)c))
+		return 1;
+
+    for (unsigned char axis = 0; axis < 3; axis++) {
+        for (unsigned char line = 0; line < RUBIKSCUBE_SIDE_FIELDCOUNT; line++) {
+            for (unsigned char dir = 0; dir < 2; dir++) {
+                RubiksCube_Rotate(c, axis, line, dir);
+
+                if (RubiksCube_Solve_R(c, target, depth + 1, max_depth)) {
+                    return 1;
+                }
+
+                RubiksCube_Rotate(c, axis, line, (dir + 1) % 2);
+            }
+        }
+    }
+    return 0;
+}
+void RubiksCube_Solve(RubiksCube* c) {
+    if (RubiksCube_IsSolved((RubiksCube_State*)c)) return;
+
+	RubiksCube_State target;
+    RubiksCube_Reset(&target);
+
+    RubiksCube_State start;
+    RubiksCube_CopyState(&start,(RubiksCube_State*)c);
+
+    printf("[RubiksCube] Starting search from scrambled state...\n");
+
+    bool solved = false;
+    for (int max_d = 1; max_d <= 25 && !solved; max_d++) {
+        printf("  Trying depth %d...\n",max_d);
+
+        RubiksCube_CopyState((RubiksCube_State*)c,&start);
+
+        if (RubiksCube_Solve_R(c,&target,0,max_d)) {
+            printf("[RubiksCube] Solved in <= %d moves!\n",max_d);
+            solved = true;
+        }
+    }
+
+    if (!solved) {
+        printf("[RubiksCube] Search limit reached -> Resetting.\n");
+        RubiksCube_Reset((RubiksCube_State*)c);
+    }
 }
 void RubiksCube_Render(RubiksCube* c,Vector* tris){
 	const float pz = -((float)RUBIKSCUBE_SIDE_FIELDCOUNT * 0.5f);
@@ -317,19 +442,13 @@ void Setup(AlxWindow* w){
 void Update(AlxWindow* w){
 	if(Menu==1){
 		Camera_Focus_S(&cam,GetMouseBefore(),GetMouse(),GetScreenRect().d,1.0f);
-		cube.ax = cam.a.x;
-		cube.ay = cam.a.y;
+		cube.ax = -cam.a.x;
+		cube.ay = -cam.a.y;
 		
 		//Camera_Update(&cam);
 		SetMouse((Vec2){ GetWidth() / 2,GetHeight() / 2 });
 	}
 	
-	if(Stroke(ALX_KEY_ESC).PRESSED)
-		Menu_Set(!Menu);
-
-	if(Stroke(ALX_KEY_Y).PRESSED)
-		Mode = Mode < 3 ? Mode+1 : 0;
-
 	if(Stroke(ALX_KEY_W).DOWN)
 		cam.p = Vec3D_Add(cam.p,Vec3D_Mul(cam.ld,1.0f * w->ElapsedTime));
 	if(Stroke(ALX_KEY_S).DOWN)
@@ -342,10 +461,22 @@ void Update(AlxWindow* w){
 		cam.p.y += 1.0f * w->ElapsedTime;
 	if(Stroke(ALX_KEY_F).DOWN)
 		cam.p.y -= 1.0f * w->ElapsedTime;
+	
+	if(Stroke(ALX_KEY_ESC).PRESSED)
+		Menu_Set(!Menu);
+	if(Stroke(ALX_KEY_Y).PRESSED)
+		Mode = Mode < 3 ? Mode+1 : 0;
 
+	if(Stroke(ALX_KEY_X).PRESSED)
+		RubiksCube_Shuffle(&cube,1U);
+	if(Stroke(ALX_KEY_C).PRESSED)
+		RubiksCube_Unshuffle(&cube,1U);
 
 	if(Stroke(ALX_KEY_SPACE).PRESSED)
-		RubiksCube_Reset(&cube);
+		RubiksCube_Reset((RubiksCube_State*)&cube);
+
+	if(Stroke(ALX_KEY_V).PRESSED)
+		RubiksCube_Solve(&cube);
 
 	if(Stroke(ALX_KEY_UP).PRESSED) 		axis_line = (axis_line + 1) % RUBIKSCUBE_SIDE_FIELDCOUNT;
 	if(Stroke(ALX_KEY_DOWN).PRESSED) 	axis_line = (axis_line - 1 + RUBIKSCUBE_SIDE_FIELDCOUNT) % RUBIKSCUBE_SIDE_FIELDCOUNT;
@@ -388,6 +519,7 @@ void Update(AlxWindow* w){
 	CStr_RenderAlxFontf(WINDOW_STD_ARGS,GetAlxFont(),0.0f,0.0f,RED,"L: %d",axis_line);
 }
 void Delete(AlxWindow* w){
+	RubiksCube_Free(&cube);
 	World3D_Free(&world);
 	AlxWindow_Mouse_SetVisible(&window);
 }
